@@ -1,0 +1,132 @@
+apply plugin: 'com.android.library'
+apply from: file(rootProject.file('module.gradle'))
+
+android {
+    ndkPath "/Users/a1/Library/Android/sdk/ndk-bundle/android-ndk-r21b"
+    compileSdkVersion rootProject.ext.targetSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+    }
+    buildFeatures {
+        prefab true
+    }
+}
+
+repositories {
+    mavenLocal()
+    jcenter()
+    maven { url 'https://dl.bintray.com/rikkaw/Libraries' }
+}
+
+dependencies {
+}
+
+def outDir = file("$rootDir/out")
+def magiskDir = file("$outDir/magisk_module")
+def zipName = "${moduleProp['name'].replace('_', '-')}-${moduleProp['version']}.zip"
+
+
+import java.nio.file.Files
+import java.security.MessageDigest
+
+static def calcSha256(file) {
+    def md = MessageDigest.getInstance("SHA-256")
+    file.eachByte 4096, { bytes, size ->
+        md.update(bytes, 0, size);
+    }
+    return md.digest().encodeHex()
+}
+static def renameOrFail(File from, File to) {
+    if (!from.renameTo(to)) {
+        throw new IOException("Unable reanme file $from to $to")
+    }
+}
+
+task systemApp () {
+
+    //clear
+    delete { delete magiskDir }
+
+    // copy from template
+    copy {
+        from "$rootDir/template/magisk_module"
+        into magiskDir.path
+    }
+
+    // copy .git files manually since gradle exclude it by default
+    Files.copy(file("$rootDir/template/magisk_module/.gitattributes").toPath(), file("${magiskDir.path}/.gitattributes").toPath())
+
+    // generate module.prop
+    def modulePropText = ""
+    moduleProp.each { k, v -> modulePropText += "$k=$v\n" }
+    modulePropText = modulePropText.trim()
+    file("$magiskDir/module.prop").text = modulePropText
+
+    copy {
+        from "$projectDir/apps"
+        into magiskDir.path
+    }
+
+    def customize_sh_append = ""
+
+    fileTree("$magiskDir.path/system").visit { f ->
+        if (f.directory) return
+        if (!f.file.path.endsWith(".apk")) return
+        copy {
+            from zipTree(f.file)
+            include "lib/**/*.so"
+            into "$f.file.path/.."
+        }
+
+        def apk_rel_path = f.file.path.replace("$magiskDir.path/", "")
+        customize_sh_append += "extract \"\$ZIPFILE\" \"$apk_rel_path\" \"\$MODPATH\"\n"
+        customize_sh_append += "set_perm \"\$MODPATH/$apk_rel_path\" 0 0 0777\n"
+
+        if(!file("$f.file.path/../lib").exists()) return
+        if(file("$f.file.path/../lib/arm64-v8a").exists()) {
+            renameOrFail(file("$f.file.path/../lib/arm64-v8a"), file("$f.file.path/../lib/arm64"))
+        }
+        if(file("$f.file.path/../lib/armeabi-v7a").exists()) {
+            renameOrFail(file("$f.file.path/../lib/armeabi-v7a"), file("$f.file.path/../lib/arm"))
+        }
+        if(file("$f.file.path/../lib/armeabi").exists() && !file("$f.file.path/../lib/arm").exists()) {
+            renameOrFail(file("$f.file.path/../lib/armeabi"), file("$f.file.path/../lib/arm"))
+        }
+        delete "$f.file.path/../lib/armeabi"
+        delete "$f.file.path/../lib/armeabi-v7a"
+        delete "$f.file.path/../lib/arm64-v8a"
+        delete "$f.file.path/../lib/x86"
+        delete "$f.file.path/../lib/x86_64"
+
+        if(file("$f.file.path/../lib").exists()) {
+            fileTree("$f.file.path/../lib/").visit { so32 ->
+                if(so32.directory) return
+                def rel_path = so32.file.path.replace("$magiskDir.path/", "")
+                println("relpath : "+rel_path)
+                customize_sh_append += "extract \"\$ZIPFILE\" \"$rel_path\" \"\$MODPATH\"\n"
+                customize_sh_append += "set_perm \"\$MODPATH/$rel_path\" 0 0 0777\n"
+            }
+        }
+    }
+
+    //Update customize.sh
+    def customize_sh = file("$magiskDir.path/customize.sh").getText() + customize_sh_append
+    file("$magiskDir.path/customize.sh").setText(customize_sh)
+
+    // generate sha1sum
+    fileTree("$magiskDir").matching {
+        exclude "README.md", "META-INF"
+    }.visit { f ->
+        if (f.directory) return
+        file(f.file.path + ".sha256sum").text = calcSha256(f.file)
+    }
+}
+
+task zipMagiskMoudle(type: Zip) {
+    from magiskDir
+    archiveName zipName
+    destinationDir outDir
+}
+
+zipMagiskMoudle.dependsOn(systemApp)
