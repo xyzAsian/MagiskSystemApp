@@ -1,0 +1,18 @@
+ext {
+    // FIXME replace with yours
+    moduleId = "SystemApp"
+    moduleName = "SystemApp"
+    moduleAuthor = "tomcat"
+    moduleDescription = "mount app to system app."
+    moduleVersion = "v1.0"
+    moduleVersionCode = 1
+
+    moduleProp = [
+            id         : moduleId,
+            name       : moduleName,
+            version    : moduleVersion,
+            versionCode: moduleVersionCode.toString(),
+            author     : moduleAuthor,
+            description: moduleDescription
+    ]
+}
