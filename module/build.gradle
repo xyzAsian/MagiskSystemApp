@@ -8,9 +8,6 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
     }
-    buildFeatures {
-        prefab true
-    }
 }
 
 repositories {
@@ -22,8 +19,14 @@ repositories {
 dependencies {
 }
 
-def outDir = file("$rootDir/out")
-def magiskDir = file("$outDir/magisk_module")
+static def isWindows() {
+    return System.properties['os.name'].contains('windows');
+}
+
+def separator = File.separator
+def outDir = file("${rootDir}${separator}out")
+def magiskTemplateDir = file("$rootDir${separator}template${separator}magisk_module")
+def magiskDir = file("${outDir}${separator}magisk_module")
 def zipName = "${moduleProp['name'].replace('_', '-')}-${moduleProp['version']}.zip"
 
 
@@ -46,63 +49,78 @@ static def renameOrFail(File from, File to) {
 task systemApp () {
 
     //clear
+    println("delete $magiskDir.path")
     delete { delete magiskDir }
 
     // copy from template
+    println("copy ${magiskTemplateDir.path} to $magiskDir.path")
     copy {
-        from "$rootDir/template/magisk_module"
+        from magiskTemplateDir.path
         into magiskDir.path
     }
 
     // copy .git files manually since gradle exclude it by default
-    Files.copy(file("$rootDir/template/magisk_module/.gitattributes").toPath(), file("${magiskDir.path}/.gitattributes").toPath())
+    println("copy ${magiskTemplateDir.path}${separator}.gitattributes to ${magiskDir.path}${separator}.gitattributes")
+    Files.copy(file("${magiskTemplateDir.path}${separator}.gitattributes").toPath(), file("${magiskDir.path}${separator}.gitattributes").toPath())
 
     // generate module.prop
+    println("generate module.prop")
     def modulePropText = ""
     moduleProp.each { k, v -> modulePropText += "$k=$v\n" }
     modulePropText = modulePropText.trim()
-    file("$magiskDir/module.prop").text = modulePropText
+    file("${magiskDir.path}${separator}module.prop").text = modulePropText
 
+    println("copy $projectDir${separator}apps to $magiskDir.path")
     copy {
-        from "$projectDir/apps"
+        from "$projectDir${separator}apps"
         into magiskDir.path
     }
 
+    println("\nstart extract libs ...")
     def customize_sh_append = ""
 
-    fileTree("$magiskDir.path/system").visit { f ->
+    fileTree("$magiskDir.path${separator}system").visit { f ->
         if (f.directory) return
         if (!f.file.path.endsWith(".apk")) return
+
+        println("\nstart deal $f.file.path \nunzip lib/**/*.so to "+file("${f.file.path}${separator}..").path)
         copy {
             from zipTree(f.file)
             include "lib/**/*.so"
-            into "$f.file.path/.."
+            into "${f.file.path}${separator}.."
         }
 
-        def apk_rel_path = f.file.path.replace("$magiskDir.path/", "")
+        def apk_rel_path = f.file.path.replace("${magiskDir.path}${separator}", "").replace("\\","/")
+        println("apk_rel_path : $apk_rel_path")
         customize_sh_append += "extract \"\$ZIPFILE\" \"$apk_rel_path\" \"\$MODPATH\"\n"
         customize_sh_append += "set_perm \"\$MODPATH/$apk_rel_path\" 0 0 0777\n"
 
-        if(!file("$f.file.path/../lib").exists()) return
-        if(file("$f.file.path/../lib/arm64-v8a").exists()) {
-            renameOrFail(file("$f.file.path/../lib/arm64-v8a"), file("$f.file.path/../lib/arm64"))
+        if(!file("$f.file.path${separator}..${separator}lib").exists()) return
+        def arm64_v8a = file("$f.file.path${separator}..${separator}lib${separator}arm64-v8a")
+        if(arm64_v8a.exists()) {
+            println("rename $arm64_v8a.path")
+            renameOrFail(file("$f.file.path${separator}..${separator}lib${separator}arm64-v8a"), file("$f.file.path${separator}..${separator}lib${separator}arm64"))
         }
-        if(file("$f.file.path/../lib/armeabi-v7a").exists()) {
-            renameOrFail(file("$f.file.path/../lib/armeabi-v7a"), file("$f.file.path/../lib/arm"))
+        def armeabi_v7a = file("$f.file.path${separator}..${separator}lib${separator}armeabi-v7a")
+        if(armeabi_v7a.exists()) {
+            println("rename $armeabi_v7a.path")
+            renameOrFail(file("$f.file.path${separator}..${separator}lib${separator}armeabi-v7a"), file("$f.file.path${separator}..${separator}lib${separator}arm"))
         }
-        if(file("$f.file.path/../lib/armeabi").exists() && !file("$f.file.path/../lib/arm").exists()) {
-            renameOrFail(file("$f.file.path/../lib/armeabi"), file("$f.file.path/../lib/arm"))
+        def armeabi = file("$f.file.path${separator}..${separator}lib${separator}armeabi")
+        if(armeabi.exists() && !file("$f.file.path${separator}..${separator}lib${separator}arm").exists()) {
+            println("rename $armeabi.path")
+            renameOrFail(file("$f.file.path${separator}..${separator}lib${separator}armeabi"), file("$f.file.path${separator}..${separator}lib${separator}arm"))
         }
-        delete "$f.file.path/../lib/armeabi"
-        delete "$f.file.path/../lib/armeabi-v7a"
-        delete "$f.file.path/../lib/arm64-v8a"
-        delete "$f.file.path/../lib/x86"
-        delete "$f.file.path/../lib/x86_64"
+        delete "$f.file.path${separator}..${separator}lib${separator}armeabi"
+        delete "$f.file.path${separator}..${separator}lib${separator}armeabi-v7a"
+        delete "$f.file.path${separator}..${separator}lib${separator}arm64-v8a"
+        delete "$f.file.path${separator}..${separator}lib${separator}x86"
+        delete "$f.file.path${separator}..${separator}lib${separator}x86_64"
 
-        if(file("$f.file.path/../lib").exists()) {
-            fileTree("$f.file.path/../lib/").visit { so32 ->
+        if(file("$f.file.path${separator}..${separator}lib").exists()) {
+            fileTree("$f.file.path${separator}..${separator}lib${separator}").visit { so32 ->
                 if(so32.directory) return
-                def rel_path = so32.file.path.replace("$magiskDir.path/", "")
+                def rel_path = so32.file.path.replace("$magiskDir.path${separator}", "").replace("\\","/")
                 println("relpath : "+rel_path)
                 customize_sh_append += "extract \"\$ZIPFILE\" \"$rel_path\" \"\$MODPATH\"\n"
                 customize_sh_append += "set_perm \"\$MODPATH/$rel_path\" 0 0 0777\n"
@@ -111,9 +129,11 @@ task systemApp () {
     }
 
     //Update customize.sh
-    def customize_sh = file("$magiskDir.path/customize.sh").getText() + customize_sh_append
-    file("$magiskDir.path/customize.sh").setText(customize_sh)
+    println("Update customize.sh")
+    def customize_sh = file("$magiskDir.path${separator}customize.sh").getText() + customize_sh_append
+    file("$magiskDir.path${separator}customize.sh").setText(customize_sh)
 
+    println("generate sha1sum")
     // generate sha1sum
     fileTree("$magiskDir").matching {
         exclude "README.md", "META-INF"
@@ -124,9 +144,11 @@ task systemApp () {
 }
 
 task zipMagiskMoudle(type: Zip) {
+    println("zip magisk module")
     from magiskDir
     archiveName zipName
     destinationDir outDir
+    println("success to : ${outDir}${separator}${zipName}")
 }
 
 zipMagiskMoudle.dependsOn(systemApp)
